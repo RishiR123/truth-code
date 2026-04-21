@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Truth Code",
+  "version": "1.0.0",
+  "description": "Silently injects a truth-first system prompt before every message on ChatGPT and Gemini. No fluff. No sycophancy. Raw accuracy.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://gemini.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Truth Code"
+  }
+}

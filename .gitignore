@@ -1,0 +1,19 @@
+# Build artefacts
+*.zip
+*.crx
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Node (if tooling is ever added)
+node_modules/
+package-lock.json
