@@ -57,6 +57,7 @@ chrome.storage.onChanged.addListener((changes) => {
 // ── Input selectors ───────────────────────────────────────────────────────────
 
 const INPUT_SELECTORS = [
+  'div[contenteditable="true"]',                   // Claude
   '#prompt-textarea',                              // ChatGPT (current)
   'textarea[data-id="root"]',                      // ChatGPT (legacy)
   'div[contenteditable="true"][data-placeholder]', // Gemini
@@ -192,6 +193,7 @@ function scheduleScrubRetry(maxMs = 2000, intervalMs = 100) {
 function attachListener(el) {
   if (attached.has(el)) return;
   attached.add(el);
+  let inputInjecting = false;
 
   el.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -208,6 +210,22 @@ function attachListener(el) {
     }, 200);
 
     scheduleScrubRetry();
+  }, true);
+
+  el.addEventListener('input', () => {
+    if (inputInjecting) return;
+    if (!guardrailEnabled) return;
+
+    const current = getValue(el).trim();
+    if (!current) return;
+    if (current.startsWith('[TRUTH PROTOCOL')) return;
+
+    inputInjecting = true;
+    try {
+      setValue(el, TRUTH_PROMPT + current);
+    } finally {
+      inputInjecting = false;
+    }
   }, true);
 }
 
