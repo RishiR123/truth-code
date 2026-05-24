@@ -63,10 +63,40 @@ const INPUT_SELECTORS = [
   'rich-textarea div[contenteditable="true"]',     // Gemini alt
   'div[contenteditable="true"][aria-label]',       // generic labelled CE
   'textarea',                                      // generic textarea
-  'div[contenteditable="true"]',                   // last-resort CE
 ];
 
-const attached = new WeakSet();
+// ── Provider abstractions (minimal) ─────────────────────────────────────────
+const PROVIDERS = {
+  claude: {
+    host: 'claude.ai',
+    selectors: [
+      '[data-testid="chat-input"]',
+      '.ProseMirror',
+      '[data-chat-input-container="true"] div[contenteditable="true"]'
+    ],
+    containerSelector: '[data-chat-input-container="true"]',
+  }
+};
+
+function isClaudeHost() {
+  try { return window.location.hostname === PROVIDERS.claude.host; } catch (_) { return false; }
+}
+
+// Claude editors are matched only through provider selectors so generic
+// contenteditable detection stays narrow and does not bind to Claude nodes.
+function isClaudeEditor(el) {
+  if (!isClaudeHost()) return false;
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+  try {
+    for (const sel of PROVIDERS.claude.selectors) {
+      if (el.matches && el.matches(sel)) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+const attachedGeneric = new WeakSet();
+const attachedClaude = new WeakSet();
 const scrubbed  = new WeakSet();
 
 // ── Value helpers ─────────────────────────────────────────────────────────────
@@ -109,7 +139,7 @@ function setValue(el, text) {
 
 function findAndScrub(el) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-  if (attached.has(el)) return false;
+  if (attachedGeneric.has(el) || attachedClaude.has(el)) return false;
   if (el.tagName === 'TEXTAREA' || el.getAttribute('contenteditable') === 'true') return false;
   if (scrubbed.has(el)) return false;
 
@@ -169,7 +199,7 @@ function scanAndScrub() {
   if (!document.body) return false;
   let found = false;
   for (const el of document.body.querySelectorAll('*')) {
-    if (scrubbed.has(el) || attached.has(el)) continue;
+    if (scrubbed.has(el) || attachedGeneric.has(el) || attachedClaude.has(el)) continue;
     if (el.getAttribute('contenteditable') === 'true') continue;
     const text = el.textContent || '';
     if (text.includes(PROTOCOL_START) && text.includes(PROTOCOL_DIVIDER)) {
@@ -190,8 +220,8 @@ function scheduleScrubRetry(maxMs = 2000, intervalMs = 100) {
 // ── Listener attachment ───────────────────────────────────────────────────────
 
 function attachListener(el) {
-  if (attached.has(el)) return;
-  attached.add(el);
+  if (attachedGeneric.has(el)) return;
+  attachedGeneric.add(el);
 
   el.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -203,8 +233,38 @@ function attachListener(el) {
 
     setValue(el, TRUTH_PROMPT + original);
 
+    // Restore the original text if submission did not consume the protocol.
     setTimeout(() => {
       if (getValue(el).startsWith('[TRUTH PROTOCOL')) setValue(el, original);
+    }, 200);
+
+    scheduleScrubRetry();
+  }, true);
+}
+
+// ── Claude provider attachment (isolated) -------------------------------
+function attachClaude(el) {
+  if (!isClaudeHost()) return;
+  if (attachedClaude.has(el)) return;
+  if (!el.isConnected) return;
+  const container = el.closest(PROVIDERS.claude.containerSelector);
+  if (!container) return;
+  attachedClaude.add(el);
+
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey) return;
+    if (!guardrailEnabled) return;
+
+    // Prevent double-injection
+    const original = getValue(el).trim();
+    if (!original) return;
+    if (original.startsWith(PROTOCOL_START)) return;
+
+    setValue(el, TRUTH_PROMPT + original);
+
+    // Restore the original text if submission did not consume the protocol.
+    setTimeout(() => {
+      if (getValue(el).startsWith(PROTOCOL_START)) setValue(el, original);
     }, 200);
 
     scheduleScrubRetry();
@@ -215,28 +275,57 @@ function attachListener(el) {
 
 function scanAndAttach(root) {
   for (const sel of INPUT_SELECTORS) {
-    try { root.querySelectorAll(sel).forEach(attachListener); } catch (_) {}
+    try {
+      root.querySelectorAll(sel).forEach((el) => {
+        try {
+          if (isClaudeEditor(el)) return;
+        } catch (_) {}
+        attachListener(el);
+      });
+    } catch (_) {}
+  }
+}
+
+function scanAndAttachClaude(root) {
+  if (!isClaudeHost()) return;
+  for (const sel of PROVIDERS.claude.selectors) {
+    try { root.querySelectorAll(sel).forEach(attachClaude); } catch (_) {}
   }
 }
 
 function checkAndAttachNode(node) {
   if (node.nodeType !== Node.ELEMENT_NODE) return;
+  // If this node is a Claude editor, let Claude-specific attachment handle it
+  if (isClaudeEditor(node)) {
+    attachClaude(node);
+    return;
+  }
+
   for (const sel of INPUT_SELECTORS) {
     try {
       if (node.matches(sel)) attachListener(node);
-      node.querySelectorAll(sel).forEach(attachListener);
+      node.querySelectorAll(sel).forEach((child) => {
+        try {
+          if (!isClaudeEditor(child)) attachListener(child);
+        } catch (_) {}
+      });
     } catch (_) {}
   }
 }
 
 scanAndAttach(document);
+scanAndAttachClaude(document);
 
 const observer = new MutationObserver((mutations) => {
   for (const mutation of mutations) {
     if (mutation.type === 'childList') {
       for (const node of mutation.addedNodes) {
         checkAndAttachNode(node);
-        if (node.nodeType === Node.ELEMENT_NODE) findAndScrub(node);
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          findAndScrub(node);
+          // Claude stays on provider-specific attachment to avoid generic binding.
+          scanAndAttachClaude(node);
+        }
       }
     } else if (mutation.type === 'attributes') {
       checkAndAttachNode(mutation.target);
